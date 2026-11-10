@@ -1,0 +1,29 @@
+{
+  "tool": "ais_bench",
+  "subcommand": "harbor_agent",
+  "params": {
+    "abbr": "terminus-2",
+    "agent_name": "terminus-2",
+    "model_names": [
+      "hosted_vllm/DeepSeek-V4.1-Flash"
+    ],
+    "api_base": "http://127.0.0.1:8080/v1",
+    "llm_kwargs": {
+      "max_tokens": 8192
+    },
+    "model_info": {
+      "max_input_tokens": 128000,
+      "max_output_tokens": 8192,
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0
+    },
+    "path": "/data/terminal-bench-2",
+    "n_attempts": 1,
+    "n_concurrent_trials": 5,
+    "environment_type": "docker",
+    "n_tasks": 10,
+    "max_num_workers": 1,
+    "work_dir": "outputs/ais_bench_harbor_agent",
+    "timeout": 86400
+  }
+}
