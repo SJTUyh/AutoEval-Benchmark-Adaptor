@@ -23,7 +23,12 @@ AutoEval-Benchmark-Adaptor/
 │   ├── discovery.py      # 定位 AISBench、解析模型/数据集别名
 │   ├── registry.py       # (tool, subcommand) → 适配器
 │   ├── preflight.py      # 通用环境探测（目标解释器子进程）
+│   ├── template.py       # 内置配置模板加载与合并
 │   ├── runner.py         # 子进程、日志、超时、结果文件
+│   ├── templates/        # 按 tool/subcommand 分组的配置模板
+│   │   └── ais_bench/
+│   │       ├── llm_accuracy.json
+│   │       └── harbor_agent.json
 │   └── tools/
 │       ├── base.py
 │       └── ais_bench/
@@ -87,6 +92,59 @@ python -m autoeval_adaptor --config examples/ais_bench_llm_accuracy.json --dry-r
 
 这些由使用方准备，适配器不做检查。
 
+### 2.4 容器化执行环境（Docker）
+
+适配器内置每个 `(tool, subcommand)` 的镜像构建与容器启动能力，默认 `execution=auto`：
+
+- 检测到可用 Docker：自动构建缺失镜像、启动容器，再用 `docker exec` 在容器内执行 AISBench；
+- 未检测到 Docker 或显式传 `--local`：回退本机执行。
+
+| 子命令 | 基镜像 | 镜像 | 容器启动方式 |
+| --- | --- | --- | --- |
+| `llm_accuracy` | `ghcr.io/aisbench/agent-runtime:<版本>-ubuntu24.04-py312-<arch>` | `autoeval/ais_bench-llm_accuracy:<版本>-ubuntu24.04-py312-<arch>` | `--net=host`，无需 docker socket |
+| `harbor_agent` | 同上 | `autoeval/ais_bench-harbor_agent:<版本>-ubuntu24.04-py312-<arch>` | 默认 socket（挂载 `/var/run/docker.sock`）；`--env-isolation dind` 使用 privileged + 独立 dockerd |
+
+镜像构建说明：
+
+- 默认版本 `v3.1-20261013-master`，可用 `benchmark_version` 覆盖；
+- Dockerfile 在基镜像内切换 benchmark tag 并以编辑模式安装（`pip install -e /benchmark`）；
+- 同时以编辑模式安装 `autoeval-adaptor` 到 `/opt/autoeval-adaptor`；
+- 构建上下文是适配器仓库根目录，因此构建需在源码 checkout 中执行。
+
+常用命令：
+
+```bash
+# 构建镜像
+autoeval-adaptor --config examples/ais_bench_llm_accuracy.json --build-env
+
+# 构建并启动容器（镜像缺失时自动构建）
+autoeval-adaptor --config examples/ais_bench_harbor_agent.json --start-env
+
+# 查看镜像/容器/环境版本
+autoeval-adaptor --config examples/ais_bench_harbor_agent.json --env-status
+
+# 停止并删除容器
+autoeval-adaptor --config examples/ais_bench_harbor_agent.json --stop-env
+```
+
+也可直接使用子命令目录下的脚本：
+
+```text
+docker/ais_bench/llm_accuracy/{build.sh,start.sh,stop.sh}
+docker/ais_bench/harbor_agent/{build.sh,start.sh,stop.sh}
+```
+
+挂载约定：
+
+- docker 模式要求 Linux 宿主绝对路径，容器内使用同路径挂载；
+- `work_dir` 自动挂载；
+- `harbor_agent` 自动同路径挂载 `path` 数据集与 `deps_path`；
+- `llm_accuracy` 可用 `datasets_dir` 挂载到 `/benchmark/ais_bench/datasets:ro`；
+- 其它目录用 `mounts: ["/host:/container[:ro]"]` 追加。
+
+`socket` 模式要求 `path`、`deps_path`、`work_dir` 为真实绝对路径（不能含符号链接）；`dind` 要求宿主 Docker >= 20.10（`--cgroupns=host`），不满足时直接报错。
+
+
 ## 3. 统一配置格式
 
 ### 3.1 顶层结构
@@ -115,6 +173,48 @@ python -m autoeval_adaptor --config examples/ais_bench_llm_accuracy.json --dry-r
 - `params` 中未声明的字段报错（防止拼写错误被静默忽略）；
 - 类型严格校验：整数不接受字符串或布尔值，`string[]` 必须全为字符串；
 - `tool` / `subcommand` 未注册时报错并列出已支持的组合。
+
+### 3.3 配置模板
+
+每个 `(tool, subcommand)` 都有一份内置配置模板，存放于：
+
+```text
+src/autoeval_adaptor/templates/<tool>/<subcommand>.json
+```
+
+默认会加载对应模板并与输入的 JSON 合并，因此基准目录中的 `standard_config.json` 只需要写基准特有参数即可。
+
+合并规则：
+
+- 以模板为底，输入配置优先；
+- `dict` 递归合并（例如 `generation_kwargs`、`llm_kwargs` 可只覆盖部分键）；
+- `list` 和标量整体替换；
+- 模板与输入配置的 `tool` / `subcommand` 必须一致。
+
+内置模板提供的通用必备参数：
+
+| 模板 | 参数 |
+| --- | --- |
+| `ais_bench/llm_accuracy` | `abbr`、`model_type`、`model`、`path`、`host_ip`、`host_port`、`api_key`、`stream`、`request_rate`、`retry`、`max_out_len`、`batch_size`、`max_num_workers`、`work_dir` |
+| `ais_bench/harbor_agent` | `abbr`、`model_names`、`api_base`、`api_key`、`n_attempts`、`n_concurrent_trials`、`environment_type`、`environment_delete`、`max_num_workers`、`work_dir` |
+
+示例：直接使用基准目录的 `standard_config.json`：
+
+```bash
+autoeval-adaptor --config ../AutoEval-Standard/DeepSeek-V4.1-Flash-1017/DeepSWE/standard_config.json --dry-run
+autoeval-adaptor --config ../AutoEval-Standard/DeepSeek-V4.1-Flash-1017/GPQA_Diamond/standard_config.json --dry-run
+```
+
+模板相关开关：
+
+| 开关 | 说明 |
+| --- | --- |
+| 默认 | 自动加载内置模板并合并 |
+| `--no-template` | 不使用模板，只认输入 JSON（缺少必备参数会报错） |
+| `--template PATH` | 使用自定义模板替代内置模板 |
+| `--show-template` | 打印当前 `tool/subcommand` 使用的模板后退出 |
+
+> 模板中的 `abbr`、`model_names`、`api_base`、`work_dir` 是通用默认值；实际模型名、服务地址和输出目录请在 `standard_config.json` 或 CLI 覆盖参数中指定。
 
 ## 4. 子功能：llm_accuracy
 
@@ -415,13 +515,24 @@ work_dir = 'D:\\...\\outputs\\ais_bench_harbor_agent'
 | `timeout` | number | 否 | 无限制 | 适配器等待子进程的秒数，超时终止并返回 124 |
 | `monitor_port` | int | 否 | `0` | Harbor 监控端口，仅 `harbor_agent` 生效 |
 | `ais_bench_root` | string | 否 | 自动探测 | AISBench 仓库根目录 |
-| `python_executable` | string | 否 | 当前解释器 | 运行 AISBench 的 Python |
+| `python_executable` | string | 否 | 当前解释器 | 本机执行时运行 AISBench 的 Python |
 | `extra_cli_args` | string[] | 否 | `[]` | 追加到 AISBench 命令末尾，如 `["--dump-eval-details"]` |
+| `execution` | string | 否 | `auto` | `auto`（有 Docker 用容器）/`docker`/`local` |
+| `docker_image` | string | 否 | 自动 | 覆盖运行镜像 |
+| `base_image` | string | 否 | 自动 | 覆盖构建设基镜像 |
+| `container_name` | string | 否 | 自动 | 覆盖容器名 |
+| `benchmark_version` | string | 否 | `v3.1-20261013-master` | 镜像 tag 与 Dockerfile 构建参数 |
+| `mounts` | string[] | 否 | `[]` | `host:container[:ro]` 额外挂载 |
+| `env_isolation` | string | 否 | `socket` | 仅 `harbor_agent`：`socket`/`dind` |
+| `case_images` | string | 否 | 空 | 仅 dind：`docker save` 镜像包 |
+| `datasets_dir` | string | 否 | 空 | 仅 `llm_accuracy`：挂到 `/benchmark/ais_bench/datasets:ro` |
+| `keep_container` | bool | 否 | `true` | 运行结束后保留容器 |
 
 ## 7. 命令行
 
 ```text
 autoeval-adaptor --config <json> [--dry-run] [--preflight-only] [--skip-preflight]
+                 [--template PATH | --no-template] [--show-template]
                  [--work-dir DIR] [--ais-bench-root DIR] [--python EXE]
 ```
 
@@ -431,9 +542,19 @@ autoeval-adaptor --config <json> [--dry-run] [--preflight-only] [--skip-prefligh
 | `--dry-run` | 只打印生成的配置与执行命令，不创建目录、不执行；默认跳过预检 |
 | `--preflight-only` | 只执行参数预检并打印结果，不运行测评 |
 | `--skip-preflight` | 执行前跳过参数预检 |
+| `--template` | 使用指定的配置模板文件，替代内置模板 |
+| `--no-template` | 不使用配置模板，只使用输入 JSON 中的参数 |
+| `--show-template` | 打印当前 `tool/subcommand` 使用的模板后退出 |
 | `--work-dir` | 覆盖 `params.work_dir` |
 | `--ais-bench-root` | 覆盖 `params.ais_bench_root` |
 | `--python` | 覆盖 `params.python_executable` |
+| `--local` | 强制本机执行 |
+| `--build-env` | 构建当前子命令对应的镜像 |
+| `--start-env` | 构建（缺失时）并启动容器 |
+| `--stop-env` | 停止并删除容器 |
+| `--env-status` | 打印镜像/容器/环境版本状态 |
+| `--force-rebuild` | 配合 `--build-env` 使用 `--no-cache` |
+| `--env-isolation` | 覆盖 `params.env_isolation`（仅 `harbor_agent`） |
 
 覆盖优先级：CLI > `params`。
 
@@ -513,7 +634,7 @@ AISBench 预检项：
 
 ### 8.1 执行流程
 
-1. 读取并校验 JSON；
+1. 读取 JSON，并合并对应 `(tool, subcommand)` 的内置配置模板；
 2. 按 `(tool, subcommand)` 选择适配器；
 3. 校验参数、解析模型/数据集别名；
 4. 渲染 AISBench Python 配置；
@@ -560,7 +681,8 @@ Harbor 场景的 `results/<model>/<dataset>/` 下还包含 `details/`、`trial_*
     "model_type": "vllm_api_general_chat",
     "abbr": "deepseek-v4.1-flash-gpqa",
     "datasets": ["gpqa_gen_0_shot_cot_chat_prompt"],
-    "work_dir": "D:\\...\\outputs\\run"
+    "work_dir": "D:\\...\\outputs\\run",
+    "template": "builtin:ais_bench/llm_accuracy"
   },
   "preflight": {
     "ok": true,
@@ -765,6 +887,8 @@ python -m pytest -q
 当前覆盖：
 
 - 顶层结构、未知字段、类型与必填校验；
+- 内置配置模板存在性、工具匹配校验、嵌套 dict 合并与用户覆盖优先级；
+- 基准 `standard_config.json` 直接合并模板后可完成配置渲染；`--no-template`、`--template`、`--show-template` 行为；
 - AISBench 根目录定位、模型/数据集别名解析、多命中与非服务化模型报错；
 - 两个子功能的配置渲染、参数落点、命令拼装；
 - 参数预检：CLI 参数/运行模式、模块与数据集、模型字段与配置校验、Harbor Agent 与参数能力、探测失败阻断执行；

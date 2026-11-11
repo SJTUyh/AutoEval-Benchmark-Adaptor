@@ -1,0 +1,22 @@
+{
+  "tool": "ais_bench",
+  "subcommand": "llm_accuracy",
+  "params": {
+    "abbr": "model-under-test",
+    "model_type": "vllm_api_general_chat",
+    "model": "",
+    "path": "",
+    "host_ip": "127.0.0.1",
+    "host_port": 8080,
+    "api_key": "",
+    "stream": false,
+    "request_rate": 0,
+    "retry": 2,
+    "max_out_len": 32768,
+    "batch_size": 1,
+    "max_num_workers": 1,
+    "execution": "auto",
+    "datasets_dir": "",
+    "work_dir": "outputs/ais_bench/llm_accuracy"
+  }
+}

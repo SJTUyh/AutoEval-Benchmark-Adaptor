@@ -2,6 +2,7 @@ import json
 import os
 import sys
 
+from autoeval_adaptor.docker_env import ContainerRun
 from autoeval_adaptor.runner import execute
 from autoeval_adaptor.tools.base import PreparedRun
 
@@ -84,3 +85,29 @@ def test_dry_run_has_no_side_effects(tmp_path, capsys):
     assert result["status"] == "dry_run"
     assert "models = []" not in capsys.readouterr().out
     assert not (tmp_path / "run").exists()
+
+
+def test_dry_run_prints_docker_exec_command(tmp_path, capsys):
+    prepared = _prepare(
+        tmp_path, ["python3.12", "-m", "ais_bench.benchmark.cli.main", "cfg.py"]
+    )
+    prepared.container = ContainerRun(
+        name="autoeval-ais-bench-llm-accuracy",
+        image="autoeval/ais_bench-llm_accuracy:test",
+        isolation="none",
+        workdir="/benchmark",
+        python="python3.12",
+        env={"PYTHONUNBUFFERED": "1"},
+    )
+
+    result = execute(prepared, dry_run=True)
+    out = capsys.readouterr().out
+
+    assert result["status"] == "dry_run"
+    assert result["execution"] == "docker"
+    assert result["container"] == "autoeval-ais-bench-llm-accuracy"
+    assert "execution: docker" in out
+    assert (
+        "docker exec -i -w /benchmark -e PYTHONUNBUFFERED=1 "
+        "autoeval-ais-bench-llm-accuracy python3.12"
+    ) in out

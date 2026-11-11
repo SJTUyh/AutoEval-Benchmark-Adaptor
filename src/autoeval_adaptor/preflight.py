@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -67,22 +68,23 @@ def run_probe(
     """在目标解释器中执行指定阶段的探测脚本，返回其 JSON 结果。"""
     payload = dict(spec)
     payload["stage"] = stage
-    command = [
-        getattr(prepared, "python_executable", None) or sys.executable,
-        "-c",
-        PROBE_SCRIPT,
-    ]
+    python = getattr(prepared, "python_executable", None) or sys.executable
+    native = [python, "-c", PROBE_SCRIPT]
+    exec_command = getattr(prepared, "exec_command", None)
+    command = exec_command(native) if exec_command else native
+    run_kwargs: dict[str, Any] = {"cwd": str(prepared.cwd), "env": prepared.env}
+    if getattr(prepared, "container", None) is not None:
+        run_kwargs = {"cwd": None, "env": os.environ.copy()}
     try:
         completed = subprocess.run(
             command,
             input=json.dumps(payload, ensure_ascii=False),
-            cwd=str(prepared.cwd),
-            env=prepared.env,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            **run_kwargs,
         )
     except OSError as exc:
         raise ProbeError(f"无法启动目标解释器 {prepared.python_executable}: {exc}") from exc

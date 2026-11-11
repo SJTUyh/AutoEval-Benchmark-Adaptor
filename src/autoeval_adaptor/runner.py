@@ -28,6 +28,9 @@ def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | N
             "subcommand": prepared.subcommand,
             "status": "dry_run",
             "exit_code": 0,
+            "execution": "docker" if prepared.container else "local",
+            "container": prepared.container.name if prepared.container else None,
+            "image": prepared.container.image if prepared.container else None,
             "command": prepared.command,
             "generated_config": (
                 str(prepared.config_path) if prepared.config_path else None
@@ -88,8 +91,11 @@ def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | N
         "subcommand": prepared.subcommand,
         "status": status,
         "exit_code": exit_code,
+        "execution": "docker" if prepared.container else "local",
+        "container": prepared.container.name if prepared.container else None,
+        "image": prepared.container.image if prepared.container else None,
         "command": prepared.command,
-        "cwd": str(prepared.cwd),
+        "cwd": prepared.container.workdir if prepared.container else str(prepared.cwd),
         "generated_config": str(prepared.config_path) if prepared.config_path else None,
         "ais_bench_work_dir": str(output_dir) if output_dir else None,
         "log_path": str(log_path),
@@ -114,20 +120,30 @@ def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | N
 
 
 def _run_streaming(prepared: PreparedRun, log_path: Path) -> tuple[int, bool]:
+    argv = prepared.exec_command()
     with log_path.open("w", encoding="utf-8") as log:
-        log.write("# command: " + " ".join(prepared.command) + "\n\n")
+        log.write("# command: " + " ".join(argv) + "\n")
+        if prepared.container:
+            log.write(
+                f"# container: {prepared.container.name} "
+                f"image={prepared.container.image}\n"
+            )
+        log.write("\n")
         log.flush()
 
+        popen_kwargs = {}
+        if prepared.container is None:
+            popen_kwargs = {"cwd": str(prepared.cwd), "env": prepared.env}
+
         process = subprocess.Popen(
-            prepared.command,
-            cwd=str(prepared.cwd),
-            env=prepared.env,
+            argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            **popen_kwargs,
         )
 
         lines: queue.Queue[str | None] = queue.Queue()
@@ -158,7 +174,7 @@ def _run_streaming(prepared: PreparedRun, log_path: Path) -> tuple[int, bool]:
                         and process.poll() is None
                     ):
                         timed_out = True
-                        process.kill()
+                        _terminate(prepared, process)
                     continue
                 if line is None:
                     break
@@ -167,14 +183,37 @@ def _run_streaming(prepared: PreparedRun, log_path: Path) -> tuple[int, bool]:
                 log.write(line)
                 log.flush()
         except KeyboardInterrupt:
-            if process.poll() is None:
-                process.kill()
+            _terminate(prepared, process)
             raise
 
         exit_code = process.wait()
         if timed_out:
             exit_code = 124
         return exit_code, timed_out
+
+
+def _terminate(prepared: PreparedRun, process: subprocess.Popen) -> None:
+    """终止执行；容器模式下先让容器内进程退出，再结束本地 docker 客户端。"""
+    if prepared.container is not None:
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    prepared.container.name,
+                    "pkill",
+                    "-f",
+                    "ais_bench.benchmark.cli.main",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if process.poll() is None:
+        process.kill()
 
 
 def _timestamp_dirs(path: Path) -> set[str]:
@@ -188,12 +227,21 @@ def _timestamp_dirs(path: Path) -> set[str]:
 
 
 def _print_dry_run(prepared: PreparedRun) -> None:
+    print("=== 执行环境 ===")
+    if prepared.container:
+        print("execution: docker")
+        print(f"image: {prepared.container.image}")
+        print(f"container: {prepared.container.name}")
+        print(f"isolation: {prepared.container.isolation}")
+        print(f"workdir: {prepared.container.workdir}")
+    else:
+        print("execution: local")
     print("=== 生成的 AISBench 配置文件 ===")
     if prepared.config_path:
         print(f"# 目标路径: {prepared.config_path}")
     print(prepared.config_content or "<无>")
     print("=== 执行命令 ===")
-    print(" ".join(prepared.command))
+    print(" ".join(prepared.exec_command()))
 
 
 def _now() -> str:

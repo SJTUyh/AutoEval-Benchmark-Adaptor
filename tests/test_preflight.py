@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
-from autoeval_adaptor.preflight import PreflightReport, ProbeError
+from autoeval_adaptor.docker_env import ContainerRun
+from autoeval_adaptor.preflight import SENTINEL, PreflightReport, ProbeError, run_probe
 from autoeval_adaptor.tools.ais_bench import preflight as ais_preflight
+from autoeval_adaptor.tools.base import PreparedRun
 
 
 def _prepared(mode="all", command=None):
@@ -188,3 +190,46 @@ def test_probe_error_becomes_report_error(monkeypatch, tmp_path):
 
     assert not report.ok
     assert "解释器不可用" in report.errors[0].message
+
+
+def test_run_probe_wraps_docker_exec(monkeypatch, tmp_path):
+    import json
+
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            stdout=SENTINEL + json.dumps({"stage": "base"}),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr("autoeval_adaptor.preflight.subprocess.run", fake_run)
+    prepared = PreparedRun(
+        tool="ais_bench",
+        subcommand="harbor_agent",
+        work_dir=tmp_path,
+        cwd="/benchmark",
+        env={},
+        command=["/opt/venvs/harbor/bin/python", "-m", "ais_bench.benchmark.cli.main"],
+        python_executable="/opt/venvs/harbor/bin/python",
+        container=ContainerRun(
+            name="c1",
+            image="img",
+            isolation="socket",
+            workdir="/benchmark",
+            python="/opt/venvs/harbor/bin/python",
+            env={"PYTHONUNBUFFERED": "1"},
+        ),
+    )
+
+    result = run_probe(prepared, {}, stage="base")
+
+    assert result["stage"] == "base"
+    command = captured["command"]
+    assert command[:5] == ["docker", "exec", "-i", "-w", "/benchmark"]
+    assert command[-3] == "/opt/venvs/harbor/bin/python"
+    assert command[-2] == "-c"
+    assert captured["kwargs"]["cwd"] is None
