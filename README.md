@@ -136,6 +136,8 @@ autoeval-adaptor --config examples/ais_bench_harbor_agent.json --env-status
 autoeval-adaptor --config examples/ais_bench_harbor_agent.json --stop-env
 ```
 
+> 用个人仓分支构建后，执行与预检也要传相同的 `--benchmark-source/--benchmark-ref`（或写入配置的 `benchmark_repo`/`benchmark_ref`），否则会使用官方版本对应的镜像和容器。分支名含 `/` 时请用仓库 URL + `--benchmark-ref` 传入。
+
 也可直接使用子命令目录下的脚本：
 
 ```text
