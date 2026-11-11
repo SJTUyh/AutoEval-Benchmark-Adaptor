@@ -179,6 +179,7 @@ def test_ensure_container_reuses_running_container(tmp_path, monkeypatch):
 
     monkeypatch.setattr(docker_env, "docker_available", lambda: True)
     monkeypatch.setattr(docker_env, "container_state", lambda name: "running")
+    monkeypatch.setattr(docker_env, "container_isolation", lambda name: "none")
     monkeypatch.setattr(docker_env, "_after_start", lambda spec, docker: None)
     monkeypatch.setattr(
         docker_env, "build_image", lambda *args, **kwargs: pytest.fail("不应构建镜像")
@@ -189,3 +190,27 @@ def test_ensure_container_reuses_running_container(tmp_path, monkeypatch):
 
     docker_env.ensure_container(spec, params, docker)
     assert work_dir.is_dir()
+
+
+def test_ensure_container_rejects_isolation_mismatch(tmp_path, monkeypatch):
+    spec = resolve_spec("ais_bench", "harbor_agent", DockerOptions())
+    params = {"work_dir": str(tmp_path / "run")}
+    monkeypatch.setattr(docker_env, "docker_available", lambda: True)
+    monkeypatch.setattr(docker_env, "container_state", lambda name: "running")
+    monkeypatch.setattr(docker_env, "container_isolation", lambda name: "dind")
+
+    with pytest.raises(ExecutionError, match="不一致"):
+        docker_env.ensure_container(spec, params, DockerOptions())
+
+
+def test_ensure_container_dind_version_gate(tmp_path, monkeypatch):
+    spec = resolve_spec(
+        "ais_bench", "harbor_agent", DockerOptions(env_isolation="dind")
+    )
+    monkeypatch.setattr(docker_env, "docker_available", lambda: True)
+    monkeypatch.setattr(docker_env, "docker_server_version", lambda: "18.09.0")
+
+    with pytest.raises(ExecutionError, match="20.10"):
+        docker_env.ensure_container(
+            spec, {"work_dir": str(tmp_path / "run")}, DockerOptions(env_isolation="dind")
+        )

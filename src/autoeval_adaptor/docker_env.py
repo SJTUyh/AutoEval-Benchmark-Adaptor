@@ -395,6 +395,23 @@ def container_state(name: str) -> str:
     return "running" if (completed.stdout or "").strip().lower() == "true" else "exited"
 
 
+def container_isolation(name: str) -> str | None:
+    completed = _run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            '{{index .Config.Labels "autoeval.isolation"}}',
+            name,
+        ],
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    value = (completed.stdout or "").strip()
+    return value or None
+
+
 def _run_container(spec: EnvSpec, params: dict, docker: DockerOptions) -> None:
     mounts = _collect_mounts(spec, params, docker)
     command = [
@@ -403,6 +420,10 @@ def _run_container(spec: EnvSpec, params: dict, docker: DockerOptions) -> None:
         "-d",
         "--name",
         spec.container_name,
+        "--label",
+        f"autoeval.isolation={spec.isolation}",
+        "--label",
+        f"autoeval.subcommand={spec.subcommand}",
         "--net=host",
         "--ipc=host",
         "-w",
@@ -487,6 +508,8 @@ def _after_start(spec: EnvSpec, docker: DockerOptions) -> None:
 def ensure_container(spec: EnvSpec, params: dict, docker: DockerOptions) -> None:
     if not docker_available():
         raise ExecutionError("docker CLI 或 daemon 不可用，无法启动执行环境")
+    if spec.isolation == "dind":
+        verify_isolation(spec)
 
     work_dir = params.get("work_dir")
     if work_dir:
@@ -494,6 +517,12 @@ def ensure_container(spec: EnvSpec, params: dict, docker: DockerOptions) -> None
 
     state = container_state(spec.container_name)
     if state == "running":
+        actual = container_isolation(spec.container_name)
+        if actual != spec.isolation and (actual is not None or spec.isolation == "dind"):
+            raise ExecutionError(
+                f"容器 {spec.container_name} 当前隔离模式为 {actual or 'unknown'}，"
+                f"与请求的 {spec.isolation} 不一致；请先执行 --stop-env"
+            )
         print(f"[env] 复用运行中的容器: {spec.container_name}", file=sys.stdout)
         if spec.isolation == "socket":
             _after_start(spec, docker)
@@ -528,6 +557,7 @@ def status(spec: EnvSpec, params: dict, docker: DockerOptions) -> dict:
         "base_image": spec.base_image,
         "container": spec.container_name,
         "container_state": state,
+        "container_isolation": container_isolation(spec.container_name),
         "isolation": spec.isolation,
         "python": spec.python,
         "workdir": CONTAINER_WORKDIR,
