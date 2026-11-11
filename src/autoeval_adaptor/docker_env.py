@@ -40,6 +40,14 @@ _ARCH_ALIASES = {
     "arm64": "aarch64",
 }
 
+_GITHUB_TREE_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?"
+    r"/tree/(?P<ref>[^/]+)(?:/.*)?$"
+)
+_GITHUB_REPO_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
+)
+
 _ENVIRONMENT_META = {
     ("ais_bench", "llm_accuracy"): {
         "directory": "llm_accuracy",
@@ -71,6 +79,9 @@ class EnvSpec:
     isolation: str
     python: str
     benchmark_version: str
+    benchmark_repo: str | None = None
+    benchmark_ref: str | None = None
+    source_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +121,8 @@ class DockerOptions:
     case_images: str | None = None
     datasets_dir: str | None = None
     benchmark_version: str | None = None
+    benchmark_repo: str | None = None
+    benchmark_ref: str | None = None
     keep_container: bool = True
 
     @classmethod
@@ -147,6 +160,8 @@ class DockerOptions:
             case_images=take("case_images") or None,
             datasets_dir=take("datasets_dir") or None,
             benchmark_version=take("benchmark_version") or None,
+            benchmark_repo=take("benchmark_repo") or None,
+            benchmark_ref=take("benchmark_ref") or None,
             keep_container=keep_container,
         )
 
@@ -206,6 +221,51 @@ def verify_isolation(spec: EnvSpec) -> None:
         )
 
 
+def _slug(value: str, limit: int = 40) -> str:
+    text = re.sub(r"[^0-9A-Za-z_.-]+", "-", value or "").strip("-._")
+    return (text or "ref")[:limit]
+
+
+def _repo_owner(repo: str) -> str:
+    match = re.search(r"github\.com[/:]([^/]+)/", repo)
+    return match.group(1) if match else "fork"
+
+
+def normalize_benchmark_source(
+    repo: str | None, ref: str | None
+) -> tuple[str | None, str | None]:
+    """把 GitHub tree URL 或仓库 URL + 分支名统一成 (repo_url, ref)。"""
+    if not repo:
+        if ref:
+            raise ConfigError("params.benchmark_ref 需要与 benchmark_repo 一起使用")
+        return None, None
+
+    repo = repo.strip()
+    ref = (ref or "").strip() or None
+
+    tree_match = _GITHUB_TREE_RE.match(repo)
+    if tree_match:
+        owner = tree_match.group("owner")
+        name = tree_match.group("repo")
+        repo = f"https://github.com/{owner}/{name}.git"
+        ref = ref or tree_match.group("ref")
+    else:
+        repo_match = _GITHUB_REPO_RE.match(repo)
+        if repo_match:
+            repo = (
+                f"https://github.com/{repo_match.group('owner')}"
+                f"/{repo_match.group('repo')}.git"
+            )
+
+    if not ref:
+        raise ConfigError(
+            "自定义 benchmark 仓库需要指定分支或 tag："
+            "使用 https://github.com/<owner>/<repo>/tree/<ref> 形式，"
+            "或同时传 benchmark_ref"
+        )
+    return repo, ref
+
+
 def resolve_spec(tool: str, subcommand: str, docker: DockerOptions) -> EnvSpec:
     meta = _ENVIRONMENT_META.get((tool, subcommand))
     if meta is None:
@@ -215,11 +275,20 @@ def resolve_spec(tool: str, subcommand: str, docker: DockerOptions) -> EnvSpec:
     if not re.fullmatch(r"[0-9A-Za-z._-]+", version):
         raise ConfigError(f"params.benchmark_version 含非法字符: {version!r}")
 
+    repo, ref = normalize_benchmark_source(docker.benchmark_repo, docker.benchmark_ref)
+    source_label = None
+    if repo:
+        source_label = f"{_slug(_repo_owner(repo), 15)}-{_slug(ref, 30)}"
+
     arch = normalize_arch()
-    tag = f"{version}-{DEFAULT_OS_TAG}-{arch}"
-    base_image = docker.base_image or f"{DEFAULT_BASE_REPO}:{tag}"
-    image = docker.image or f"autoeval/ais_bench-{subcommand}:{tag}"
-    container_name = docker.container_name or f"autoeval-{tool}-{subcommand}".replace("_", "-")
+    base_tag = f"{version}-{DEFAULT_OS_TAG}-{arch}"
+    image_tag = f"{base_tag}-{source_label}" if source_label else base_tag
+    base_image = docker.base_image or f"{DEFAULT_BASE_REPO}:{base_tag}"
+    image = docker.image or f"autoeval/ais_bench-{subcommand}:{image_tag}"
+    container_name = docker.container_name or (
+        f"autoeval-{tool}-{subcommand}".replace("_", "-")
+        + (f"-{source_label.lower()}" if source_label else "")
+    )
     isolation = docker.env_isolation or meta["isolation"]
     if isolation not in ISOLATION_KINDS:
         raise ConfigError(f"不支持的隔离方式: {isolation}")
@@ -236,6 +305,9 @@ def resolve_spec(tool: str, subcommand: str, docker: DockerOptions) -> EnvSpec:
         isolation=isolation,
         python=meta["python"],
         benchmark_version=version,
+        benchmark_repo=repo,
+        benchmark_ref=ref,
+        source_label=source_label,
     )
 
 
@@ -363,6 +435,28 @@ def image_exists(image: str) -> bool:
     return completed.returncode == 0
 
 
+def _resolve_benchmark_rev(repo: str, ref: str) -> str:
+    """取分支/tag 最新 commit 作为构建缓存键，保证每次都安装最新代码。"""
+    git = shutil.which("git")
+    if git:
+        try:
+            completed = subprocess.run(
+                [git, "ls-remote", repo, ref],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            completed = None
+        if completed is not None and completed.returncode == 0:
+            for line in (completed.stdout or "").splitlines():
+                parts = line.split()
+                if parts:
+                    return parts[0]
+    # 无法解析远端时用时间戳，强制刷新该层缓存
+    return str(time.time_ns())
+
+
 def build_image(spec: EnvSpec, *, force: bool = False) -> None:
     if not spec.dockerfile.is_file():
         raise ExecutionError(f"缺少 Dockerfile: {spec.dockerfile}")
@@ -374,6 +468,18 @@ def build_image(spec: EnvSpec, *, force: bool = False) -> None:
         f"BASE_IMAGE={spec.base_image}",
         "--build-arg",
         f"BENCHMARK_VERSION={spec.benchmark_version}",
+    ]
+    if spec.benchmark_repo:
+        rev = _resolve_benchmark_rev(spec.benchmark_repo, spec.benchmark_ref)
+        command += [
+            "--build-arg",
+            f"BENCHMARK_REPO={spec.benchmark_repo}",
+            "--build-arg",
+            f"BENCHMARK_REF={spec.benchmark_ref}",
+            "--build-arg",
+            f"BENCHMARK_REV={rev}",
+        ]
+    command += [
         "-f",
         str(spec.dockerfile),
         "-t",
@@ -382,6 +488,13 @@ def build_image(spec: EnvSpec, *, force: bool = False) -> None:
     ]
     print(f"[env] 构建镜像: {spec.image}", file=sys.stdout)
     print(f"[env] 基镜像: {spec.base_image}", file=sys.stdout)
+    if spec.benchmark_repo:
+        print(
+            f"[env] benchmark 源码: {spec.benchmark_repo}@{spec.benchmark_ref}",
+            file=sys.stdout,
+        )
+    else:
+        print(f"[env] benchmark 版本: {spec.benchmark_version}", file=sys.stdout)
     print(f"[env] 命令: {' '.join(command)}", file=sys.stdout)
     completed = subprocess.run(command)
     if completed.returncode != 0:

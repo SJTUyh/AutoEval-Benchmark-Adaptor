@@ -108,6 +108,7 @@ python -m autoeval_adaptor --config examples/ais_bench_llm_accuracy.json --dry-r
 
 - 默认版本 `v3.1-20261013-master`，可用 `benchmark_version` 覆盖；
 - Dockerfile 在基镜像内切换 benchmark tag 并以编辑模式安装（`pip install -e /benchmark`）；
+- 支持安装个人仓/分支的最新代码：`--benchmark-source https://github.com/<owner>/<repo>/tree/<branch>`（或仓库 URL + `--benchmark-ref`）。镜像 tag 与容器名会自动追加 `<owner>-<branch>` 后缀；每次构建都会解析分支最新 commit 作为缓存键，确保拉取最新代码；
 - 同时以编辑模式安装 `autoeval-adaptor` 到 `/opt/autoeval-adaptor`；
 - 构建上下文是适配器仓库根目录，因此构建需在源码 checkout 中执行。
 
@@ -116,6 +117,14 @@ python -m autoeval_adaptor --config examples/ais_bench_llm_accuracy.json --dry-r
 ```bash
 # 构建镜像
 autoeval-adaptor --config examples/ais_bench_llm_accuracy.json --build-env
+
+# 用个人仓分支的最新代码构建
+autoeval-adaptor --config examples/ais_bench_llm_accuracy.json --build-env \
+  --benchmark-source https://github.com/SJTUyh/benchmark/tree/autoeval
+
+# 也可用仓库 URL + 分支名
+autoeval-adaptor --config examples/ais_bench_llm_accuracy.json --build-env \
+  --benchmark-source https://github.com/SJTUyh/benchmark --benchmark-ref autoeval
 
 # 构建并启动容器（镜像缺失时自动构建）
 autoeval-adaptor --config examples/ais_bench_harbor_agent.json --start-env
@@ -522,6 +531,8 @@ work_dir = 'D:\\...\\outputs\\ais_bench_harbor_agent'
 | `base_image` | string | 否 | 自动 | 覆盖构建设基镜像 |
 | `container_name` | string | 否 | 自动 | 覆盖容器名 |
 | `benchmark_version` | string | 否 | `v3.1-20261013-master` | 镜像 tag 与 Dockerfile 构建参数 |
+| `benchmark_repo` | string | 否 | 空 | 个人仓 URL 或 `.../tree/<ref>` 形式 |
+| `benchmark_ref` | string | 否 | 空 | 个人仓分支/tag；tree URL 中已包含时可省略 |
 | `mounts` | string[] | 否 | `[]` | `host:container[:ro]` 额外挂载 |
 | `env_isolation` | string | 否 | `socket` | 仅 `harbor_agent`：`socket`/`dind` |
 | `case_images` | string | 否 | 空 | 仅 dind：`docker save` 镜像包 |
@@ -555,6 +566,8 @@ autoeval-adaptor --config <json> [--dry-run] [--preflight-only] [--skip-prefligh
 | `--env-status` | 打印镜像/容器/环境版本状态 |
 | `--force-rebuild` | 配合 `--build-env` 使用 `--no-cache` |
 | `--env-isolation` | 覆盖 `params.env_isolation`（仅 `harbor_agent`） |
+| `--benchmark-source` | 用个人仓分支源码构建，支持 `.../tree/<ref>` 或仓库 URL |
+| `--benchmark-ref` | 个人仓分支/tag，配合 `--benchmark-source` |
 
 覆盖优先级：CLI > `params`。
 

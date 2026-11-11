@@ -80,6 +80,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("socket", "dind"),
         help="覆盖 params.env_isolation（仅 harbor_agent 有效）",
     )
+    parser.add_argument(
+        "--benchmark-source",
+        help=(
+            "使用个人仓/分支的 benchmark 源码构建镜像，"
+            "支持 https://github.com/<owner>/<repo>/tree/<ref> 或仓库 URL"
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-ref",
+        help="benchmark 仓库分支或 tag；使用完整 tree URL 时可省略",
+    )
     parser.add_argument("--work-dir", help="覆盖 params.work_dir")
     parser.add_argument("--ais-bench-root", help="覆盖 params.ais_bench_root")
     parser.add_argument(
@@ -223,3 +234,7 @@ def _apply_overrides(params: dict, args: argparse.Namespace) -> None:
         params["python_executable"] = args.python_executable
     if args.env_isolation:
         params["env_isolation"] = args.env_isolation
+    if args.benchmark_source:
+        params["benchmark_repo"] = args.benchmark_source
+    if args.benchmark_ref:
+        params["benchmark_ref"] = args.benchmark_ref

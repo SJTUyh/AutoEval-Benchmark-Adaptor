@@ -7,6 +7,7 @@ from autoeval_adaptor.docker_env import (
     Mount,
     container_run,
     normalize_arch,
+    normalize_benchmark_source,
     parse_mounts,
     resolve_spec,
     verify_isolation,
@@ -63,6 +64,49 @@ def test_resolve_spec_honors_overrides():
 def test_resolve_spec_rejects_unknown_environment():
     with pytest.raises(ConfigError):
         resolve_spec("other", "x", DockerOptions())
+
+
+def test_normalize_benchmark_source_from_tree_url():
+    repo, ref = normalize_benchmark_source(
+        "https://github.com/SJTUyh/benchmark/tree/autoeval", None
+    )
+    assert repo == "https://github.com/SJTUyh/benchmark.git"
+    assert ref == "autoeval"
+
+
+def test_normalize_benchmark_source_repo_plus_ref():
+    repo, ref = normalize_benchmark_source(
+        "https://github.com/SJTUyh/benchmark", "feature/foo"
+    )
+    assert repo == "https://github.com/SJTUyh/benchmark.git"
+    assert ref == "feature/foo"
+
+
+def test_normalize_benchmark_source_requires_ref():
+    with pytest.raises(ConfigError, match="分支或 tag"):
+        normalize_benchmark_source("https://github.com/SJTUyh/benchmark.git", None)
+    with pytest.raises(ConfigError, match="benchmark_repo"):
+        normalize_benchmark_source(None, "autoeval")
+    assert normalize_benchmark_source(None, None) == (None, None)
+
+
+def test_resolve_spec_with_personal_branch():
+    spec = resolve_spec(
+        "ais_bench",
+        "llm_accuracy",
+        DockerOptions(
+            benchmark_repo="https://github.com/SJTUyh/benchmark/tree/autoeval"
+        ),
+    )
+    assert spec.benchmark_repo == "https://github.com/SJTUyh/benchmark.git"
+    assert spec.benchmark_ref == "autoeval"
+    assert spec.source_label == "SJTUyh-autoeval"
+    assert spec.image.endswith("-SJTUyh-autoeval")
+    assert spec.container_name == "autoeval-ais-bench-llm-accuracy-sjtuyh-autoeval"
+    # 基镜像仍使用官方 release tag，不追加个人分支后缀
+    assert spec.base_image.endswith(
+        "v3.1-20261013-master-ubuntu24.04-py312-x86_64"
+    )
 
 
 def test_parse_mounts_rejects_bad_format():

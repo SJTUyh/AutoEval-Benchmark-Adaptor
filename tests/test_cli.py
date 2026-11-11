@@ -294,6 +294,32 @@ def test_build_env_invokes_build(tmp_path, monkeypatch):
     assert calls[0][0].startswith("autoeval/ais_bench-llm_accuracy:")
 
 
+def test_build_env_with_personal_branch(tmp_path, monkeypatch):
+    import autoeval_adaptor.cli as cli
+
+    benchmark = make_fake_benchmark(tmp_path)
+    config_path = _write_config(tmp_path, benchmark)
+    calls = []
+    monkeypatch.setattr(cli, "build_image", lambda spec, force=False: calls.append(spec))
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--build-env",
+                "--benchmark-source",
+                "https://github.com/SJTUyh/benchmark/tree/autoeval",
+            ]
+        )
+        == 0
+    )
+    spec = calls[0]
+    assert spec.benchmark_ref == "autoeval"
+    assert spec.benchmark_repo == "https://github.com/SJTUyh/benchmark.git"
+    assert spec.image.endswith("-SJTUyh-autoeval")
+
+
 def test_start_and_stop_env_dispatch(tmp_path, monkeypatch):
     import autoeval_adaptor.cli as cli
 

@@ -65,6 +65,8 @@ def take_runtime(
         case_images=reader.take("case_images") or None,
         datasets_dir=reader.take("datasets_dir") or None,
         benchmark_version=reader.take("benchmark_version") or None,
+        benchmark_repo=reader.take("benchmark_repo") or None,
+        benchmark_ref=reader.take("benchmark_ref") or None,
         keep_container=reader.take("keep_container", kind="bool", default=True),
     )
 
