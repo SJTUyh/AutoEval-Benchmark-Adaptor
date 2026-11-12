@@ -235,6 +235,10 @@ def _render(
             "",
             f"work_dir = {str(runtime.work_dir)!r}",
             "",
+            "# mmengine 在 read_base 惰性导入模式下会把顶层 import copy 当作配置变量，",
+            "# 落盘为 copy=<module ...> 后无法重载；执行完成后移除该绑定。",
+            "del copy",
+            "",
         ]
     )
     return "\n".join(lines)
