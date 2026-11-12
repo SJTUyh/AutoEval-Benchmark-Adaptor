@@ -76,9 +76,7 @@ def collect_harbor_results(prepared: PreparedRun, output_dir: Path) -> dict:
 
 
 def _collect_cases(job_dir: Path) -> list[dict]:
-    trial_dirs = sorted(
-        path for path in job_dir.glob("trial_*") if path.is_dir()
-    )
+    trial_dirs = sorted(_case_dirs(job_dir))
     attempts: dict[str, int] = {}
     cases: list[dict] = []
     for trial_dir in trial_dirs:
@@ -88,6 +86,17 @@ def _collect_cases(job_dir: Path) -> list[dict]:
         attempts[case_id] = attempt
         cases.append(_build_case(trial_dir, result, case_id, attempt))
     return cases
+
+
+def _case_dirs(job_dir: Path) -> set[Path]:
+    """兼容两种 Harbor 布局：trial_* 目录，以及以任务名命名的 case 目录。"""
+    candidates = {
+        path for path in job_dir.glob("trial_*") if path.is_dir()
+    }
+    for path in job_dir.iterdir():
+        if path.is_dir() and (path / "result.json").is_file():
+            candidates.add(path)
+    return candidates
 
 
 def _build_case(

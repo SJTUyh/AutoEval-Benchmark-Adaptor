@@ -124,6 +124,33 @@ def test_collects_summary_and_cases(tmp_path):
     assert third["duration_sec"] is None
 
 
+def test_legacy_task_dir_layout(tmp_path):
+    _make_summary(tmp_path, {"avg_score": 0.5, "total_count": 1})
+    _make_trial(
+        tmp_path,
+        "taskA__suffix",
+        {
+            "trial_name": "taskA__suffix",
+            "task_name": "taskA",
+            "started_at": "2026-11-11T10:00:00Z",
+            "finished_at": "2026-11-11T10:00:10Z",
+            "verifier_result": {"rewards": {"reward": 1.0}},
+            "agent_result": {"n_input_tokens": 10, "n_output_tokens": 2},
+        },
+    )
+
+    payload = collect_harbor_results(_prepared(), tmp_path)
+
+    assert payload["case_count"] == 1
+    case = payload["cases"][0]
+    assert case["case_id"] == "taskA"
+    assert case["trial_dir"] == "taskA__suffix"
+    assert case["status"] == "success"
+    assert case["duration_sec"] == 10.0
+    assert case["input_tokens"] == 10
+    assert case["output_tokens"] == 2
+
+
 def test_attempts_increment_for_same_case(tmp_path):
     _make_trial(
         tmp_path,
