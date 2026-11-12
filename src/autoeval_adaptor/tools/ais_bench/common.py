@@ -11,12 +11,6 @@ from pathlib import Path
 
 from ...config import ParamReader
 from ...discovery import resolve_root
-from ...docker_env import (
-    EXECUTION_KINDS,
-    ISOLATION_KINDS,
-    ContainerRun,
-    DockerOptions,
-)
 
 
 @dataclass
@@ -31,17 +25,9 @@ class RuntimeOptions:
     ais_bench_root: Path
     python_executable: str
     extra_cli_args: list[str]
-    execution: str
-    docker: DockerOptions
-    container: ContainerRun | None = None
 
 
-def take_runtime(
-    reader: ParamReader,
-    *,
-    container: ContainerRun | None = None,
-    search_from: Path | None = None,
-) -> RuntimeOptions:
+def take_runtime(reader: ParamReader, *, search_from: Path | None = None) -> RuntimeOptions:
     work_dir = reader.take("work_dir", required=True)
     max_num_workers = reader.take("max_num_workers", kind="int", default=1)
     debug = reader.take("debug", kind="bool", default=False)
@@ -55,24 +41,6 @@ def take_runtime(
     extra_cli_args = reader.take("extra_cli_args", kind="list_str", default=[])
     root = resolve_root(reader.take("ais_bench_root"), search_from)
 
-    docker = DockerOptions(
-        execution=reader.take("execution", default="auto", choices=EXECUTION_KINDS),
-        image=reader.take("docker_image") or None,
-        base_image=reader.take("base_image") or None,
-        container_name=reader.take("container_name") or None,
-        mounts=reader.take("mounts", kind="list_str", default=[]),
-        env_isolation=reader.take("env_isolation", choices=ISOLATION_KINDS),
-        case_images=reader.take("case_images") or None,
-        datasets_dir=reader.take("datasets_dir") or None,
-        benchmark_version=reader.take("benchmark_version") or None,
-        benchmark_repo=reader.take("benchmark_repo") or None,
-        benchmark_ref=reader.take("benchmark_ref") or None,
-        keep_container=reader.take("keep_container", kind="bool", default=True),
-    )
-
-    if container is not None:
-        python_executable = container.python
-
     return RuntimeOptions(
         work_dir=Path(work_dir).expanduser().resolve(),
         max_num_workers=max_num_workers,
@@ -84,9 +52,6 @@ def take_runtime(
         ais_bench_root=root,
         python_executable=python_executable,
         extra_cli_args=list(extra_cli_args),
-        execution=docker.execution,
-        docker=docker,
-        container=container,
     )
 
 

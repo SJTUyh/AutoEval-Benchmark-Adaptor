@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 from ...config import MISSING, ParamReader
 from ...discovery import ConfigRef, resolve_dataset, resolve_model
@@ -41,7 +42,7 @@ class AISBenchAccuracyAdapter(BaseAdapter):
     tool = "ais_bench"
     subcommand = "llm_accuracy"
 
-    def prepare(self, params: dict, *, container=None) -> PreparedRun:
+    def prepare(self, params: dict) -> PreparedRun:
         reader = ParamReader(params)
 
         abbr = reader.take("abbr", required=True)
@@ -56,7 +57,7 @@ class AISBenchAccuracyAdapter(BaseAdapter):
         dump_eval_details = reader.take("dump_eval_details", kind="bool", default=False)
         dump_extract_rate = reader.take("dump_extract_rate", kind="bool", default=False)
         merge_ds = reader.take("merge_ds", kind="bool", default=False)
-        runtime = take_runtime(reader, container=container)
+        runtime = take_runtime(reader)
 
         if num_prompts is not None and num_prompts < 1:
             raise ConfigError("params.num_prompts 必须是 >= 1 的整数")
@@ -104,15 +105,12 @@ class AISBenchAccuracyAdapter(BaseAdapter):
             config_content=config_content,
             timeout=runtime.timeout,
             mode="all",
-            container=runtime.container,
             summary={
                 "model_type": model_type,
                 "abbr": abbr,
                 "datasets": list(datasets),
                 "num_prompts": num_prompts,
                 "work_dir": str(runtime.work_dir),
-                "execution": runtime.execution,
-                "container": runtime.container.name if runtime.container else None,
             },
             preflight_context={
                 "modules": [
@@ -150,6 +148,11 @@ class AISBenchAccuracyAdapter(BaseAdapter):
         from .preflight import build_report
 
         return build_report(prepared)
+
+    def collect_results(self, prepared: PreparedRun, output_dir: Path) -> dict:
+        from .llm_results import collect_llm_results
+
+        return collect_llm_results(prepared, output_dir)
 
 
 def _accuracy_cli_args(

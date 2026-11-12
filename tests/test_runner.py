@@ -2,7 +2,6 @@ import json
 import os
 import sys
 
-from autoeval_adaptor.docker_env import ContainerRun
 from autoeval_adaptor.runner import execute
 from autoeval_adaptor.tools.base import PreparedRun
 
@@ -85,29 +84,74 @@ def test_dry_run_has_no_side_effects(tmp_path, capsys):
     assert result["status"] == "dry_run"
     assert "models = []" not in capsys.readouterr().out
     assert not (tmp_path / "run").exists()
+    assert result["unified_result"] is None
+    assert result["unified_result_path"] is None
+    assert result["unified_result_error"] is None
 
 
-def test_dry_run_prints_docker_exec_command(tmp_path, capsys):
-    prepared = _prepare(
-        tmp_path, ["python3.12", "-m", "ais_bench.benchmark.cli.main", "cfg.py"]
+class _FakeAdapter:
+    def __init__(self, payload=None, error=None):
+        self.payload = payload
+        self.error = error
+        self.calls = []
+
+    def collect_results(self, prepared, output_dir):
+        self.calls.append(output_dir)
+        if self.error is not None:
+            raise self.error
+        return self.payload
+
+
+def _success_script(run_dir):
+    return (
+        "import pathlib;"
+        f"(pathlib.Path(r'{run_dir}') / '20260101_000000').mkdir(parents=True, exist_ok=True);"
+        "print('done')"
     )
-    prepared.container = ContainerRun(
-        name="autoeval-ais-bench-llm-accuracy",
-        image="autoeval/ais_bench-llm_accuracy:test",
-        isolation="none",
-        workdir="/benchmark",
-        python="python3.12",
-        env={"PYTHONUNBUFFERED": "1"},
-    )
 
-    result = execute(prepared, dry_run=True)
-    out = capsys.readouterr().out
 
-    assert result["status"] == "dry_run"
-    assert result["execution"] == "docker"
-    assert result["container"] == "autoeval-ais-bench-llm-accuracy"
-    assert "execution: docker" in out
-    assert (
-        "docker exec -i -w /benchmark -e PYTHONUNBUFFERED=1 "
-        "autoeval-ais-bench-llm-accuracy python3.12"
-    ) in out
+def test_success_writes_unified_result(tmp_path):
+    run_dir = tmp_path / "run"
+    prepared = _prepare(tmp_path, [sys.executable, "-c", _success_script(run_dir)])
+    payload = {"total_score": 1.0, "case_count": 0, "cases": []}
+    adapter = _FakeAdapter(payload)
+
+    result = execute(prepared, adapter=adapter)
+
+    assert result["status"] == "success"
+    assert adapter.calls == [run_dir / "20260101_000000"]
+    assert result["unified_result"] == payload
+    assert result["unified_result_error"] is None
+    assert result["unified_result_path"] == str(run_dir / "unified_result.json")
+    assert json.loads(
+        (run_dir / "unified_result.json").read_text(encoding="utf-8")
+    ) == payload
+
+    saved = json.loads((run_dir / "adaptor_result.json").read_text(encoding="utf-8"))
+    assert saved["unified_result"] == payload
+    assert saved["unified_result_path"] == str(run_dir / "unified_result.json")
+
+
+def test_unimplemented_collector_does_not_fail_run(tmp_path):
+    run_dir = tmp_path / "run"
+    prepared = _prepare(tmp_path, [sys.executable, "-c", _success_script(run_dir)])
+
+    result = execute(prepared, adapter=_FakeAdapter(None))
+
+    assert result["status"] == "success"
+    assert result["unified_result"] is None
+    assert "尚未实现统一结果提取" in result["unified_result_error"]
+    assert not (run_dir / "unified_result.json").exists()
+
+
+def test_collector_error_does_not_fail_run(tmp_path, capsys):
+    run_dir = tmp_path / "run"
+    prepared = _prepare(tmp_path, [sys.executable, "-c", _success_script(run_dir)])
+
+    result = execute(prepared, adapter=_FakeAdapter(error=RuntimeError("boom")))
+
+    assert result["status"] == "success"
+    assert result["unified_result"] is None
+    assert "RuntimeError: boom" in result["unified_result_error"]
+    assert "统一结果提取失败" in capsys.readouterr().err
+    assert not (run_dir / "unified_result.json").exists()

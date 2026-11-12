@@ -90,13 +90,13 @@ class AISBenchHarborAgentAdapter(BaseAdapter):
     tool = "ais_bench"
     subcommand = "harbor_agent"
 
-    def prepare(self, params: dict, *, container=None) -> PreparedRun:
+    def prepare(self, params: dict) -> PreparedRun:
         reader = ParamReader(params)
 
         abbr = reader.take("abbr", required=True)
         dataset_abbr = reader.take("dataset_abbr")
         overrides = reader.take("model_overrides", kind="dict", default={})
-        runtime = take_runtime(reader, container=container)
+        runtime = take_runtime(reader)
 
         model_fields: dict = {}
         for key, kind in MODEL_FIELDS.items():
@@ -143,7 +143,6 @@ class AISBenchHarborAgentAdapter(BaseAdapter):
             config_content=config_content,
             timeout=runtime.timeout,
             mode="agent",
-            container=runtime.container,
             summary={
                 "abbr": abbr,
                 "agent_name": model_fields.get("agent_name"),
@@ -151,8 +150,6 @@ class AISBenchHarborAgentAdapter(BaseAdapter):
                 "path": dataset_args.get("path"),
                 "dataset_name_version": dataset_args.get("dataset_name_version"),
                 "work_dir": str(runtime.work_dir),
-                "execution": runtime.execution,
-                "container": runtime.container.name if runtime.container else None,
             },
             preflight_context={
                 "modules": [
@@ -205,6 +202,11 @@ class AISBenchHarborAgentAdapter(BaseAdapter):
         from .preflight import build_report
 
         return build_report(prepared)
+
+    def collect_results(self, prepared: PreparedRun, output_dir: Path) -> dict:
+        from .harbor_results import collect_harbor_results
+
+        return collect_harbor_results(prepared, output_dir)
 
 
 def _derive_dataset_abbr(dataset_args: dict) -> str:

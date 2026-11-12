@@ -6,21 +6,15 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..docker_env import ContainerRun, wrap_exec
-
 
 @dataclass
 class PreparedRun:
-    """一个已校验、待执行的测评调用。
-
-    ``command`` 始终是**容器内（或本机）的原生命令**，不包含 docker 前缀；
-    需要实际执行时调用 :meth:`exec_command`。
-    """
+    """一个已校验、待执行的测评调用。"""
 
     tool: str
     subcommand: str
     work_dir: Path
-    cwd: Path | str
+    cwd: Path
     env: dict[str, str]
     command: list[str]
     python_executable: str | None = None
@@ -30,13 +24,6 @@ class PreparedRun:
     mode: str | None = None
     summary: dict = field(default_factory=dict)
     preflight_context: dict = field(default_factory=dict)
-    container: ContainerRun | None = None
-
-    def exec_command(self, argv: list[str] | None = None) -> list[str]:
-        native = list(self.command if argv is None else argv)
-        if self.container is not None:
-            return wrap_exec(self.container, native)
-        return native
 
 
 class BaseAdapter(ABC):
@@ -44,7 +31,7 @@ class BaseAdapter(ABC):
     subcommand = ""
 
     @abstractmethod
-    def prepare(self, params: dict, *, container: ContainerRun | None = None) -> PreparedRun:
+    def prepare(self, params: dict) -> PreparedRun:
         """校验 params 并生成待执行任务。"""
 
     def preflight(self, prepared: PreparedRun):
@@ -54,3 +41,7 @@ class BaseAdapter(ABC):
         report = PreflightReport(tool=prepared.tool, subcommand=prepared.subcommand)
         report.add("工具预检", "pass", "该工具未定义环境预检项")
         return report
+
+    def collect_results(self, prepared: PreparedRun, output_dir: Path) -> dict | None:
+        """从已有测评产物中提取统一结果；未实现时返回 None。"""
+        return None

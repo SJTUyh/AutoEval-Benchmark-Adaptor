@@ -15,9 +15,6 @@ autoeval-adaptor = "autoeval_adaptor.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-autoeval_adaptor = ["templates/**/*.json"]
-
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

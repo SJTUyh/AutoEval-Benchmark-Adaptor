@@ -18,7 +18,13 @@ from .tools.base import PreparedRun
 TIMESTAMP_DIR = re.compile(r"^\d{8}_\d{6}$")
 
 
-def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | None = None) -> dict:
+def execute(
+    prepared: PreparedRun,
+    *,
+    dry_run: bool = False,
+    preflight: dict | None = None,
+    adapter=None,
+) -> dict:
     started_at = _now()
 
     if dry_run:
@@ -28,9 +34,6 @@ def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | N
             "subcommand": prepared.subcommand,
             "status": "dry_run",
             "exit_code": 0,
-            "execution": "docker" if prepared.container else "local",
-            "container": prepared.container.name if prepared.container else None,
-            "image": prepared.container.image if prepared.container else None,
             "command": prepared.command,
             "generated_config": (
                 str(prepared.config_path) if prepared.config_path else None
@@ -41,6 +44,9 @@ def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | N
             "duration_sec": 0.0,
             "error": None,
             "preflight": preflight,
+            "unified_result": None,
+            "unified_result_path": None,
+            "unified_result_error": None,
         }
 
     try:
@@ -86,16 +92,17 @@ def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | N
         )
         output_dir = prepared.work_dir / latest
 
+    unified_result, unified_result_path, unified_result_error = _collect_unified(
+        prepared, adapter, output_dir
+    )
+
     result = {
         "tool": prepared.tool,
         "subcommand": prepared.subcommand,
         "status": status,
         "exit_code": exit_code,
-        "execution": "docker" if prepared.container else "local",
-        "container": prepared.container.name if prepared.container else None,
-        "image": prepared.container.image if prepared.container else None,
         "command": prepared.command,
-        "cwd": prepared.container.workdir if prepared.container else str(prepared.cwd),
+        "cwd": str(prepared.cwd),
         "generated_config": str(prepared.config_path) if prepared.config_path else None,
         "ais_bench_work_dir": str(output_dir) if output_dir else None,
         "log_path": str(log_path),
@@ -105,6 +112,9 @@ def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | N
         "error": error,
         "params": prepared.summary,
         "preflight": preflight,
+        "unified_result": unified_result,
+        "unified_result_path": unified_result_path,
+        "unified_result_error": unified_result_error,
     }
 
     result_path = prepared.work_dir / "adaptor_result.json"
@@ -119,31 +129,50 @@ def execute(prepared: PreparedRun, *, dry_run: bool = False, preflight: dict | N
     return result
 
 
+def _collect_unified(
+    prepared: PreparedRun,
+    adapter,
+    output_dir: Path | None,
+) -> tuple[dict | None, str | None, str | None]:
+    """执行结束后提取统一结果；提取失败不影响测评状态。"""
+    if adapter is None or output_dir is None:
+        return None, None, None
+    try:
+        payload = adapter.collect_results(prepared, output_dir)
+    except Exception as exc:  # noqa: BLE001 外部产物解析失败不应中断运行
+        message = f"{type(exc).__name__}: {exc}"
+        print(f"[adaptor] 统一结果提取失败: {message}", file=sys.stderr)
+        return None, None, message
+    if payload is None:
+        return None, None, f"{prepared.tool}/{prepared.subcommand} 尚未实现统一结果提取"
+    path = prepared.work_dir / "unified_result.json"
+    try:
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        message = f"写入统一结果失败: {exc}"
+        print(f"[adaptor] {message}", file=sys.stderr)
+        return None, None, message
+    return payload, str(path), None
+
+
 def _run_streaming(prepared: PreparedRun, log_path: Path) -> tuple[int, bool]:
-    argv = prepared.exec_command()
     with log_path.open("w", encoding="utf-8") as log:
-        log.write("# command: " + " ".join(argv) + "\n")
-        if prepared.container:
-            log.write(
-                f"# container: {prepared.container.name} "
-                f"image={prepared.container.image}\n"
-            )
-        log.write("\n")
+        log.write("# command: " + " ".join(prepared.command) + "\n\n")
         log.flush()
 
-        popen_kwargs = {}
-        if prepared.container is None:
-            popen_kwargs = {"cwd": str(prepared.cwd), "env": prepared.env}
-
         process = subprocess.Popen(
-            argv,
+            prepared.command,
+            cwd=str(prepared.cwd),
+            env=prepared.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            **popen_kwargs,
         )
 
         lines: queue.Queue[str | None] = queue.Queue()
@@ -174,7 +203,7 @@ def _run_streaming(prepared: PreparedRun, log_path: Path) -> tuple[int, bool]:
                         and process.poll() is None
                     ):
                         timed_out = True
-                        _terminate(prepared, process)
+                        process.kill()
                     continue
                 if line is None:
                     break
@@ -183,37 +212,14 @@ def _run_streaming(prepared: PreparedRun, log_path: Path) -> tuple[int, bool]:
                 log.write(line)
                 log.flush()
         except KeyboardInterrupt:
-            _terminate(prepared, process)
+            if process.poll() is None:
+                process.kill()
             raise
 
         exit_code = process.wait()
         if timed_out:
             exit_code = 124
         return exit_code, timed_out
-
-
-def _terminate(prepared: PreparedRun, process: subprocess.Popen) -> None:
-    """终止执行；容器模式下先让容器内进程退出，再结束本地 docker 客户端。"""
-    if prepared.container is not None:
-        try:
-            subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    prepared.container.name,
-                    "pkill",
-                    "-f",
-                    "ais_bench.benchmark.cli.main",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
-    if process.poll() is None:
-        process.kill()
 
 
 def _timestamp_dirs(path: Path) -> set[str]:
@@ -227,21 +233,12 @@ def _timestamp_dirs(path: Path) -> set[str]:
 
 
 def _print_dry_run(prepared: PreparedRun) -> None:
-    print("=== 执行环境 ===")
-    if prepared.container:
-        print("execution: docker")
-        print(f"image: {prepared.container.image}")
-        print(f"container: {prepared.container.name}")
-        print(f"isolation: {prepared.container.isolation}")
-        print(f"workdir: {prepared.container.workdir}")
-    else:
-        print("execution: local")
     print("=== 生成的 AISBench 配置文件 ===")
     if prepared.config_path:
         print(f"# 目标路径: {prepared.config_path}")
     print(prepared.config_content or "<无>")
     print("=== 执行命令 ===")
-    print(" ".join(prepared.exec_command()))
+    print(" ".join(prepared.command))
 
 
 def _now() -> str:

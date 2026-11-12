@@ -33,10 +33,3 @@ def get_adapter(tool: str, subcommand: str):
             f"不支持的 tool/subcommand: {tool}/{subcommand}，已支持: {available}"
         ) from None
     return adapter_cls()
-
-
-def registered_adapters() -> list[tuple[str, str]]:
-    """返回已注册的 (tool, subcommand) 列表。"""
-    from . import tools  # noqa: F401
-
-    return sorted(_ADAPTERS)
