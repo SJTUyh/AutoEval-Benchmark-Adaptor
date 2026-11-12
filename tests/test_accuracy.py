@@ -47,6 +47,18 @@ def test_prepare_renders_config_and_command(tmp_path):
     assert prepared.config_path.parent.name == ".adaptor"
 
 
+def test_rendered_config_removes_copy_module_binding(tmp_path):
+    benchmark = make_fake_benchmark(tmp_path)
+    adapter = get_adapter("ais_bench", "llm_accuracy")
+
+    content = adapter.prepare(_params(tmp_path, benchmark)).config_content
+
+    # mmengine 会把惰性导入模式下仍绑定的 copy 模块当成配置变量写进落盘文件。
+    assert "import copy" in content
+    assert "\ndel copy\n" in content
+    ast.parse(content)
+
+
 def test_prepare_rejects_unknown_param(tmp_path):
     benchmark = make_fake_benchmark(tmp_path)
     adapter = get_adapter("ais_bench", "llm_accuracy")
